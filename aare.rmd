@@ -1,0 +1,423 @@
+---
+title: "Aare Project"
+author: "Simon Günter"
+date: "27 12 2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+if (!require("tidyverse")) install.packages("tidyverse",repos = "http://cran.us.r-project.org") ;
+if (!require("pracma")) install.packages("pracma",repos = "http://cran.us.r-project.org"); 
+if (!require("Metrics")) install.packages("Metrics",repos = "http://cran.us.r-project.org");
+if (!require("png")) install.packages("png",repos = "http://cran.us.r-project.org") ;
+if (!require("RCurl")) install.packages("RCurl",repos = "http://cran.us.r-project.org") ;
+library(tidyverse);
+library(pracma);
+library(Metrics);
+library(png)
+library(RCurl) 
+
+all_data <- read.csv(file="https://raw.githubusercontent.com/simonguenter/aare/master/aare_data.csv", header=TRUE, sep=",");
+
+
+# remove na values: Take the previous value of the feature
+for(i in 3600:1) {
+  for(j in 1:46) {
+    if (is.na(all_data [i,j])) {
+      k  = i-1;
+      while (is.na(all_data [k,j])) {
+        k  = k-1;
+      }
+      all_data [i,j] = all_data [k,j];
+    }
+  }
+}
+ 
+
+train = all_data [1: 144,1:46]; 
+valid = all_data [(144*1+1): (144*2),1:46];
+train = rbind(train,all_data [(144*2+1): (144*3),1:46])
+test = all_data [(144*3+1): (144*4),1:46];
+for(i in 5:25) {
+  subset = all_data [(144*(i-1)+1): (144*i),1:46];
+  if(mod(i,4)==0) {
+    test = rbind(test,subset);
+  }
+  if(mod(i,4)==1 || mod(i,4)==3 ) {
+    train = rbind(train,subset);
+  }
+  if(mod(i,4)==2) {
+    valid = rbind(valid,subset);
+  }
+}
+
+
+# function to extract the same time range for every day
+extract_subvalues <- function(set,offset_start,offset_end) {
+  size = dim(set) [1]; 
+  from = offset_start;  
+  to = offset_end;  
+  features =set [from:to,1:46];
+  from = from + 144;
+  to = to + 144;
+  while(from < size) {
+    features = rbind(features,set [from:to,1:46]);
+    from = from + 144;
+    to = to + 144; 
+  }
+  return(features)
+}  
+
+
+# funtion to extract the feature values of every day (time range 800-1600)
+extract_features <- function(set) { 
+  from = 49; # 800
+  to = 96; # 1600
+  return(extract_subvalues(set,from,to));
+} 
+
+# funtion to extract the values to be predicted of every day (time range 1200-2000)
+extract_goals <- function(set) {
+  from = 73; # 1200
+  to = 120; # 2000
+  subvalues = extract_subvalues(set,from,to);
+  size = dim(subvalues) [1]; 
+  return( subvalues [1:size,2]);
+} 
+
+# funtion to extract the feature values of every day of the specified hour
+extract_hour_subfeature <- function(set, hour) { 
+  from = (hour+7)*6 + 1;
+  to = (hour+8)*6; 
+  return (extract_subvalues(set,from,to));
+} 
+
+# funtion to extract the values to be predicted of every day of the specified hour
+extract_hour_goals <- function(set, hour) { 
+  from = (hour+11)*6 + 1;
+  to = (hour+12)*6; 
+  sub_values = extract_subvalues(set,from,to);
+  size = dim(sub_values) [1]; 
+  return(sub_values [1:size,2]);
+} 
+
+
+# Build correspondence of feature sets (from 800-1600) and goals (from 1200-2000)
+train_features <-extract_features(train);
+train_goals <-extract_goals(train);
+valid_features <-extract_features(valid);
+vaild_goals <-extract_goals(valid);
+ 
+ 
+# LM using all features
+lm_train_all_features= lm(train_goals ~., data = train_features);
+
+```
+# Aare Project
+
+## Introduction/overview/executive
+### Executive summary 
+The goal of the project is to create a short-term temperature forecast system for the Aare river in Bern. Two freely available data sources where used to construct the predictor. The best results were achieved with a very simple model.
+
+### Proposed prediction task
+The Aare is the river flowing through the capital of Switzerland, Bern. It is very popular for swimmer because it has a moderate strong current and the city provides supporting facilities (like changing rooms, swimming pool, space for sunbathing) free of charge. A lot of people working in the city go for a swim after they finished work. The here proposed problem is to predict the water temperature in 4 hours’ time from midday to eight o'clock pm. 
+
+### Sources
+All data and source files can be obtained at https://github.com/simonguenter/aare/.
+
+### Data
+The data sources are the Time series described in https://api.existenz.ch/
+
+* BAFU Hydrology API (Hydro)
+* SwissMetNet Weather Measurement API (SMN)
+
+### Summary
+The key steps of the project were
+
+* Initial choice of locations for which data is collected
+* Data collection
+* Reducing the feature set
+* Data consolidation
+* Splitting the data set in training, validation and test set
+* Validating different models
+* Test the models
+
+## Methods/analysis
+
+### Initial choice of locations
+The measurement stations closest to Bern were chosen.
+
+The stations for the SMD were
+
+* Brienz(BRI)
+* Interkaken (INT)
+* Thun (THU)
+* Bantiger (BAN)
+* Mühleberg (MUH)
+* Bern (BER)
+
+
+```{r, echo=FALSE, message=F, warning=F, fig.align="center"}
+url <- "https://raw.githubusercontent.com/simonguenter/aare/master/images/stationenLabeled.png"
+
+url_cont <- getURLContent(url)
+img <- readPNG(url_cont)
+rimg <- as.raster(img) # raster multilayer object
+r <- nrow(rimg) / ncol(rimg) # image ratio
+plot(rimg)
+``` 
+
+The stations for the Hydro Data were located in
+
+* Brienz (BRI)
+* Interkaken (INT)
+* Thun (THU)
+* Bern (BER)
+* Hagneck (HAG)
+* Biel (BIE)
+
+
+```{r, echo=FALSE, message=F, warning=F, fig.align="center"}
+url <- "https://raw.githubusercontent.com/simonguenter/aare/master/images/stationen2Labeled.png"
+
+url_cont <- getURLContent(url)
+img <- readPNG(url_cont)
+rimg <- as.raster(img) # raster multilayer object
+r <- nrow(rimg) / ncol(rimg) # image ratio
+plot(rimg)
+```
+
+
+### Data collection
+
+The two APIs allow the extraction of data for the last 24 hours. A Java program was written to collect the data for all 12 locations (6 for SME and 6 for hydro). The Java program DataDownloader.java is provided in the GIT repository. A repeated task was set up in Windows to start the Java program every day at the same time. The collection period was from 25.11.2019 to 20.12.2019. 
+
+### Reducing the feature set
+The hydro data has only two features:
+
+* Flow: Speed of Flow of the river 
+* Temp: Current Temperature of the river
+
+Both are considered relevant to the prediction problem.
+
+
+The SMN data set has many features and the stations have different feature sets. The features are
+
+* dd Wind direction; ten minutes mean
+* dd_tow Wind direction vectoriel; ten minutes interval
+* ff Wind speed; ten minutes mean
+* ff_tow Wind speed tower; ten minutes mean
+* fx Gust peak (one second); maximum
+* fx_tow Gust peak (one second) tower; maximum 
+* qfe Pressure at station level (QFE); current value
+* qff Pressure reduced to sea level (QFF); current value
+* qnh Pressure reduced to sea level according to standard atmosphere (QNH); current value
+* rad Global radiation
+* rh Relative air humidity 2 m above ground; current value
+* rh_tow Relative air humidity tower; current value
+* rr Precipitation; ten minutes total
+* ss Sunshine duration; ten minutes total
+* td  Dew point 2 m above ground; current value
+* td_tow Dew point tower
+* tt_tow Air temperature
+* tt Air temperature 2 m above ground; current value
+
+The following tables show the supported features  of the stations
+
+```{r fset, include=FALSE}
+
+data <- c(1,0,1,0,1,0,1,0,1,0,0,0,1,0,0,0,0,0) 
+data <- c(data,0,1,0,1,0,1,0,0,0,1,0,1,0,1,0,1,1,0)
+data <- c(data,0,1,0,1,0,1,0,0,0,1,0,1,0,1,0,1,1,0)
+data <- c(data,1,0,1,0,1,0,1,1,1,1,1,0,1,1,1,0,0,1)
+data <- c(data,1,0,1,0,1,0,1,1,1,1,1,0,1,1,1,0,0,1)
+data <- c(data,1,0,1,0,1,0,1,1,1,1,1,0,1,1,1,0,0,1)
+features <- matrix(data,ncol=6,byrow = FALSE)
+rownames(features) <- c("dd","dd_tow","ff","ff_tow","fx","fx_tow","qfe","qff","qnh","rad","rh","rh_tow","rr","ss","td" ,"td_tow" ,"tt_tow","tt")
+colnames(features) <- c("BRI","MUH","BAN","BER","INT","THU")
+featurestable <- as.table(features)
+
+```
+```{r fsetoutput, include=TRUE,echo=FALSE}
+featurestable
+```
+
+The follwing features are considered not relevant for the prediction task and are therefore not used: dd,dd_tow,fx,fx_tow, rad.
+qfe, qff and qnn are measuring the same value with different normalization techniques and are therfore redundant. We will only use qnh.
+
+### Consolidating the data
+The java Program DataConverter.java, which is provided in the GIT repository, constructs the feature vectors from the file with the raw data. The reason why this step is not done in R is that the raw data is in JSON format and Java has a build-in support for JSON. 
+The constructed feature vectors have the following properties:
+
+* The feature vector has 46 elements (see table below for numbering of the features).
+* Each vector corresponds to a 10-minute time span starting on midnight.
+* Measurements are mapped to the corresponding time span. In case of several measurements for the same feature and time span only one is used.
+* Vectors of 25 days are included resulting in 3600 vectors in total.
+
+
+```{r fset2, include=FALSE}
+data <- c('10','11','34','','35','','','36','','','','','') 
+data <- c(data,'','','','42','','','43','','44','','45','46','')
+data <- c(data,'','','','37','','','38','','39','','40','41','')
+data <- c(data,'1','2','3','','4','5','','6','7','8','','','9')
+data <- c(data,'12','13','27','','28','29','','30','31','32','','','33')
+data <- c(data,'14','15','20','','21','22','','23','24','25','','','26')
+data <- c(data,'16','17','','','','','','','','','','','')
+data <- c(data,'18','19','','','','','','','','','','','')
+features <- matrix(data,ncol=8,byrow = FALSE)
+rownames(features) <- c("hydo temp", "hydro flow","ff","ff_tow","qnh","rh","rh_tow","rr","ss","td" ,"td_tow" ,"tt_tow","tt")
+colnames(features) <- c("BRI","MUG","BAN","BER","INT","THU","HAG","BIE")
+featurestable <- as.table(features)
+
+```
+```{r fsetoutput2, include=TRUE,echo=FALSE}
+featurestable
+```
+
+The feature vectors are written in the file aare_data.csv which is also provided in the GIT repository.
+
+### Visualizing the data
+To verify that the data collection and consolidation worked, a plot of temperature data of the locations was created. The plot contains the day-night variations and the the variations of the different locations are strongly correlated as expected. 
+
+
+```{r temp, include=FALSE}
+p1 <- ggplot(all_data, aes(x = 1:3600 / 144)) + xlab("days") + ylab("temperature") + labs(colour='Locations');
+p1 <- p1 + geom_line(aes(y = all_data$Bern_temperature, colour="Bern")) ; 
+p1 <- p1 + geom_line(aes(y = all_data$brienz_temperature, colour="Brienz")) ; 
+p1 <- p1 + geom_line(aes(y = all_data$interlaken_temperature, colour="Interlaken"));   
+p1 <- p1 + geom_line(aes(y = all_data$thun_temperature, colour="Thun")) ; 
+p1 <- p1 + geom_line(aes(y = all_data$hagneck_temperature, colour="Hagneck"));   
+p1 <- p1 + geom_line(aes(y = all_data$biel_temperature, colour="Biel"));  
+```
+```{r tempoutput, include=TRUE, echo=FALSE}
+p1
+```
+
+### Removing missing values
+There a total of 1544 missing values in the data set. These values are set to the last previous non missing value of the same feature.
+
+### Splitting the data set in training, validation and test set
+Data from 25 days were collected. To have a realistic splitting, the split was done on a day basis. 
+As the data set is very small, a 100-fold cross-validation is applied: The days are 100 times randomly mapped to the training, test and validation set where 13 days are used for the training set and 6 days for training and test set, respectively. 
+When reporting details of the models (e.g. coefficients) a fixed non-randomized splitting was used.
+
+
+### Build correspondence of feature set and value to be predicted
+The value to be predicted, the water temperature of Bern in 4 hours’ time, will be called the goal in the following. In a first step the goal (temperature at 1200 midday to 2000 at night) are matched to the corresponding features (from 800 in the morning to 1600 in the afternoon). 
+
+
+### Models
+Data science is explorative, so the following sections contain descriptions of the models, their rationales, and their result on the validation sets.
+
+#### Static model
+The simplest model is that the temperature in 4 hours’ time is the same as now. On the validation sets a RMSE of 0.2828561 was achieved.
+
+### Constant difference model
+In this model the difference of the temperature in 4 hours to the actual temperature is constant. This constant is the mean over the whole training set of the difference between the water temperature of Bern and the goal. On the validation sets a RMSE of 0.2344857 was obtained.
+
+### Linear model (LM)
+In this model goal=c + p1 * f1 + p2 * f2 + ... +  p46 * f46 with c a constant, f the features and p the parameters. The parameters were determined by linear regression using the function lm.  On the validation sets a RMSE of 0.3036546 was achieved. The reason why this RMSE is worse than for the static model is that the linear model is heavily  overfit on the training set. This can be confirmed by looking at the coefficients of the linear model of the non-randomized splitting:
+
+```{r coeff, include=TRUE, echo=FALSE}
+lm_train_all_features$coefficients;
+```
+
+The coefficients are all over the place. Especially strange is that the coefficient for the feature "temperature Bern", which should be the most strongly correlated to the goal (as it is same feature 4 hours later), has a negative coefficient.
+
+### Linear model only Bern features
+To avoid overfitting only a subset of all features can be used. An obvious choice is to only select the features of location  Bern (which are feature number 1 to 9). On the validation sets a RMSE of 0.25827884 was achieved which is still worse than the RMSE for the constant difference model. For the non-randomized splitting the coefficient of this model for  "temperature Bern" is a much more reasonable 0.8762307. 
+
+### Linear model only Bern Hydro features
+To test if better results can be achieved with fewer features, the feature set was further reduced to the hydro measurements of Bern (flow and water temperature). On the validation set a RMSE of 0.2279663 was achieved, the best result at this time. 
+
+
+### Hourly models
+The difference between the actual water temperature and the temperature in 4 hours strongly depends on the actual time. E.g. from 12:00 to 16:00 a significant increase can be expected and from 16:00 to 20:00 a slight decrease is normal. To take this into account we split the prediction task into a task for each individual daytime hour resulting in 8 tasks. We denote models using such split as "hourly" in the following. 
+
+### Hourly constant difference model
+This is the same as the constant difference model but using a different constant for each daytime hour. An excellent RSME of 0.1599026 was achieved on the validation sets. 
+
+### Hourly linear model only Bern features
+This is same as the linear model only using Bern features where a model for each daytime hour is constructed. A RSME of 0.1844289 was obtained on the validation sets. 
+
+### Linear model only Bern features and Daytime
+This linear model also only uses the Bern features. Instead of constructing 8 different models the daytime is added to the feature vector (as number of multitudes of 10 minutes after midnight). A RSME of 0.2068088 was achieved on the validation sets. This much better that the performance of the linear model without the time information but far worse than the hourly model. The reason for this is that the relationship between the time feature and the water temperature is not linear as shown in the following figure for the non-randomized splitting:
+
+```{r daytime, include=TRUE,echo=FALSE, fig.height=4}
+diffs = c();
+for(i in 1:8) { 
+  sub_train_features<-extract_hour_subfeature(train,i);
+  
+  sub_train_goals <- extract_hour_goals(train,i); 
+  avg_diff = mean(sub_train_goals - sub_train_features[1:length(sub_train_goals),2]);
+  diffs = c(diffs,avg_diff);  
+} 
+plot(x=8:15,y=diffs,type = "l",xlab = "daytime",ylab = "temperature difference to 4 hours later");
+```
+
+### Hourly linear model only Bern Hydro features
+This is the same as the linear model using only Bern Hydro features where a model for each daytime hour is constructed. A RSME of 0.168865 was achieved on the validation sets.   
+
+### Hourly LM with history using only features from Location Bern.
+It may be useful to not only consider the actual measurements but also previous measurements. This model uses as feature vector the current feature values and the feature values 10 minutes ago so that the feature vector has the size of 18. With this model a RSME of 0.1961641 was achieved on the validation sets. This is  worse that when only using the original feature vector. A reason for this is again overfitting. This is also indicated by the warning produced by R "prediction from a rank-deficient fit may be misleading".
+
+### Hourly LM with temperature history using only features from Location Bern.
+In the last model we again had too many features and overfitting occurred. In this model we only use the the previous values of the most important feature, the water temperature in Bern. To the feature vector the last n values of Bern's water temperature is added. The optimal value of n is determined on the validation sets. The results on the validation set for the non-randomized splitting and different  values of n are given in the following figure
+
+```{r optim, include=TRUE,echo=FALSE, fig.height=4}
+vals = c(0.1120959,0.1112288,0.1113314,0.1101903,0.1098324,0.1093591,0.1087406,0.1076531,0.1069266,0.1077381,0.1058111,0.1048306,0.1059323,0.1076200,0.1076991,0.1074700,0.1076462, 0.1079480, 0.1102637, 0.1143175);
+plot(x=1:20,y=vals,type = "l",xlab = "n",ylab = "RMSE");
+```
+A RSME of 0.1779884 was achieved on the validation sets.
+
+### Hourly LM with temperature history using only hydro features from Location Bern.
+For this model the current flow and temperature and the last n temperature measurements are considered. The optimal value of n is determined on the validation sets. A RSME of 0.1597465 was achieved, the best result on the validation sets.
+
+
+## Results
+
+The results of the most important models on the validation and test sets are given in the following table
+```{r results, include=TRUE,echo=FALSE, fig.height=4}
+
+tab <- c(0.2344857,0.2370119 ) 
+tab <- c(tab,0.2582788,0.2663168)  
+tab <- c(tab,0.1599026,0.1569507)  
+tab <- c(tab,0.1844289,0.181729)  
+tab <- c(tab,0.168865,0.1662575)  
+tab <- c(tab,0.1779884,0.1797779)  
+tab <- c(tab,0.1597465,0.160038)   
+resulttab <- matrix(tab,ncol=2,byrow = TRUE)
+rownames(resulttab) <- c("Constant difference model","LM using only feature Bern","Hourly Constant difference model",
+                         "Hourly LM features Bern","Hourly LM hydro features Bern","Hourly LM with history features Bern","Hourly LM with history hydro features Bern")
+colnames(resulttab) <- c("Validation","Test"); 
+``` 
+```{r results2, include=TRUE,echo=FALSE}
+resulttab
+```
+The differences between the validation and test set results are very small. This is due to the large number of cross-validations done. 
+
+On the test sets the best result was obtained with the "hourly constant difference" model, a very simple model. The best model on the validation set, "Hourly LM with temperature history using only features from Location Bern", is only the second best on the test sets. The reason why this model did better on the validation sets is that the parameter n was optimized on the validation sets, so again overfitting (this time on the validation sets) occurred. 
+
+The reason why the simple models outperform the more complex ones is that the data set is very small. 
+  
+## Conclusion / Future work
+
+Several models for a short-term temperature forecast system were constructed and evaluated.  Due to the small data set the best performance was achieved with the very simple "hourly constant difference" model.
+
+Future works may include the following:
+
+* Collection of data from a much longer time period. This would reduce the observed overfitting and it would be expected that more complex models outperform simpler ones. In addition, it it is to be expected that with more data the information of the other locations may improve the results.
+* Model for other prediction problems, e.g. one day forecast or forecast for a different location.
+* Ideally the data would be collected during the summer, as the prediction is most relevant for this season. 
+
+ 
+
+
+
+
+
+
+
